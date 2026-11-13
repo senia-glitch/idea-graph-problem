@@ -54,8 +54,6 @@
 pip install git+https://github.com/senia-glitch/idea-graph-problem.git
 ```
 
-Пакету нужна оболочка с выбором нескольких вариантов (`idea-graph-shell` и `idea-graph-decider`
-не старее версии, где добавлен `multiple`).
 
 ```
 pip install -e ".[test]"

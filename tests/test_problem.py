@@ -43,7 +43,7 @@ def test_manifest_is_built_from_layers():
     assert "{{" not in skill
     for layer in LAYERS:
         assert layer["question"] in skill and layer["sufficient"] in skill
-    for phrase in ("Важность", "multiple: true", "один раз", "не больше 5", "всегда пишет человек"):
+    for phrase in ("Важность", "выбрать и дописать своё", "один раз", "не больше 5", "всегда пишет человек"):
         assert phrase in skill
 
 
