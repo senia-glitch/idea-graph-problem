@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "idea-graph-problem"
+version = "0.1.0"
+description = "Этап 1: проблема — домен → сценарий → проблема → требуемый результат"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["idea-graph-core @ git+https://github.com/senia-glitch/idea-graph-core.git"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.entry-points."idea_graph.packages"]
+problem = "idea_graph_problem:manifest"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+idea_graph_problem = ["*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
