@@ -58,7 +58,7 @@ def test_no_domain_is_the_first_gap(store):
 
 
 def test_gaps_walk_down_the_tree(store):
-    domain = add(store, DOMAIN, "Пациенты частных клиник старше 30", "c1")
+    domain = add(store, DOMAIN, "Пациенты частных клиник старше 30", None)
     assert any("нет ни одного принятого «сценарий»" in t for t in texts(store))
     scenario = add(store, SCENARIO, "Утром, когда нужно записаться на приём", domain, author=AGENT, status="accepted")
     assert any("нет ни одного принятого «проблема»" in t for t in texts(store))
@@ -72,7 +72,7 @@ def test_gaps_walk_down_the_tree(store):
 
 
 def test_several_results_and_branches(store):
-    domain = add(store, DOMAIN, "Пациенты", "c1")
+    domain = add(store, DOMAIN, "Пациенты", None)
     s1 = add(store, SCENARIO, "Сценарий 1", domain, author=AGENT, status="accepted")
     s2 = add(store, SCENARIO, "Сценарий 2", domain, author=AGENT, status="accepted")
     p = add(store, PROBLEM, "Проблема", s1, body="Важность: средняя", author=AGENT, status="accepted")
@@ -84,7 +84,7 @@ def test_several_results_and_branches(store):
 
 
 def test_proposed_cards_are_pending_not_counted(store):
-    domain = add(store, DOMAIN, "Пациенты", "c1")
+    domain = add(store, DOMAIN, "Пациенты", None)
     add(store, SCENARIO, "Черновик сценария", domain, author=AGENT)         # предложен агентом
     info = assess(store)
     assert any("Черновик сценария" in p for p in info["pending"])
@@ -92,12 +92,12 @@ def test_proposed_cards_are_pending_not_counted(store):
 
 
 def test_domain_must_be_written_by_human(store):
-    add(store, DOMAIN, "Все люди", "c1", author=AGENT, status="accepted")
+    add(store, DOMAIN, "Все люди", None, author=AGENT, status="accepted")
     assert any("не человек" in m for m in assess(store)["misplaced"])
 
 
 def test_card_on_wrong_place(store):
-    add(store, SCENARIO, "Сценарий под корнем", "c1", author=AGENT, status="accepted")
+    add(store, SCENARIO, "Сценарий под корнем", None, author=AGENT, status="accepted")
     assert any("должна быть потомком карточки вида «домен»" in m for m in assess(store)["misplaced"])
 
 
@@ -113,9 +113,15 @@ def test_importance_field():
 def test_prepare_and_conclude(store):
     ctx = Ctx(store)
     assert "доменов пока нет" in prepare(ctx) and conclude(ctx, "пробелов_нет") == "есть_пробелы"
-    domain = add(store, DOMAIN, "Пациенты", "c1")
+    domain = add(store, DOMAIN, "Пациенты", None)
     s = add(store, SCENARIO, "С", domain, author=AGENT, status="accepted")
     p = add(store, PROBLEM, "П", s, body="Важность: низкая", author=AGENT, status="accepted")
     add(store, RESULT, "Р", p, author=AGENT, status="accepted")
     assert "Незакрытых мест нет" in prepare(ctx)
     assert conclude(ctx, "есть_пробелы") == "пробелов_нет" and ctx.state["gaps"] == []
+
+
+def test_domain_is_top_level_without_parent(store):
+    domain = add(store, DOMAIN, "Пациенты", None)
+    add(store, DOMAIN, "Врачи", domain)                           # домен под доменом — не на своём месте
+    assert any("верхнего уровня" in m for m in assess(store)["misplaced"])

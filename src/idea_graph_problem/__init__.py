@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from idea_graph_core import ACCEPTED, DETAIL, PROPOSED, ROOT_KIND, is_human
+from idea_graph_core import ACCEPTED, DETAIL, PROPOSED, is_human
 
 __version__ = "0.1.0"
 
@@ -25,7 +25,7 @@ MAX_FOLLOWUPS = 5          # уточняющих вопросов на одну
 # Слои этапа: сверху вниз. ``human_only`` — карточку вида пишет только человек.
 # ``field`` — обязательное поле в описании карточки: последняя строка «<Название>: <значение>».
 LAYERS: list[dict] = [
-    {"kind": DOMAIN, "parent": ROOT_KIND, "human_only": True,
+    {"kind": DOMAIN, "parent": None, "human_only": True,
      "question": "Кто испытывает проблему?",
      "sufficient": "названа конкретная группа людей с отличительным признаком, а не «все» и не «люди»"},
     {"kind": SCENARIO, "parent": DOMAIN,
@@ -85,7 +85,10 @@ def assess(store) -> dict:
             if card["status"] == PROPOSED:
                 pending.append(f"{_name(card)} ({layer['kind']})")
             parent = _parent(store, card)
-            if parent is None or parent["kind"] != layer["parent"]:
+            if layer["parent"] is None:
+                if parent is not None:
+                    misplaced.append(f"{_name(card)} ({layer['kind']}) должна быть карточкой верхнего уровня, без родителя")
+            elif parent is None or parent["kind"] != layer["parent"]:
                 misplaced.append(f"{_name(card)} ({layer['kind']}) должна быть потомком карточки вида «{layer['parent']}»")
             if layer.get("human_only") and not is_human(card.get("author", "")):
                 misplaced.append(f"{_name(card)}: карточку «{layer['kind']}» создал не человек — её пишет только пользователь")
@@ -175,8 +178,8 @@ def layers_text() -> str:
     out = []
     for number, layer in enumerate(LAYERS, 1):
         who = "**пишет только человек**" if layer.get("human_only") else "предлагает агент, принимает человек"
-        parent = "корень идеи" if layer["parent"] == ROOT_KIND else f"«{layer['parent']}»"
-        out.append(f"{number}. **{layer['kind']}** (потомок: {parent}; {who})\n"
+        parent = "верхний уровень, без родителя" if layer["parent"] is None else f"потомок «{layer['parent']}»"
+        out.append(f"{number}. **{layer['kind']}** ({parent}; {who})\n"
                    f"   - Вопрос: {layer['question']}\n   - Достаточно, если: {layer['sufficient']}")
         field = layer.get("field")
         if field:
@@ -195,7 +198,7 @@ def manifest() -> dict:
                        "Уточняет, рекомендует варианты, структурирует; решает всегда человек.",
         "kind": "agent",
         "order": 5,
-        "reads": ["идея", *KINDS],
+        "reads": KINDS,
         "writes": [SCENARIO, PROBLEM, RESULT],
         "asks": True,
         "web_search": False,
