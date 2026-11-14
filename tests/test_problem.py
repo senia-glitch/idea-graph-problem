@@ -59,15 +59,17 @@ def test_no_domain_is_the_first_gap(store):
 
 def test_gaps_walk_down_the_tree(store):
     domain = add(store, DOMAIN, "Пациенты частных клиник старше 30", None)
-    assert any("нет ни одного принятого «сценарий»" in t for t in texts(store))
-    scenario = add(store, SCENARIO, "Утром, когда нужно записаться на приём", domain, author=AGENT, status="accepted")
-    assert any("нет ни одного принятого «проблема»" in t for t in texts(store))
-    problem = add(store, PROBLEM, "Не дозвониться в регистратуру", scenario, author=AGENT, status="accepted")
-    t = texts(store)
-    assert any("не указано поле «Важность»" in x for x in t) and any("«результат»" in x for x in t)
-    store.apply([{"op": "update_card", "id": problem, "body": "Звонят по 20 минут.\nВажность: высокая"}], HUMAN)
+    assert any("нет ни одного «сценарий»" in t for t in texts(store))
+    scenario = add(store, SCENARIO, "Утром, когда нужно записаться на приём", domain, author=AGENT)
+    assert any("нет ни одного «проблема»" in t for t in texts(store))      # черновик уже считается: идём глубже
+    problem = add(store, PROBLEM, "Не дозвониться в регистратуру", scenario, author=AGENT)
+    assert any("«результат»" in x for x in texts(store))
+    # «Важность» не пробел агента: её выбирает человек на карточке
     assert not any("Важность" in x for x in texts(store))
-    add(store, RESULT, "Записаться без звонка", problem, author=AGENT, status="accepted")
+    assert any("Важность" in x for x in assess(store)["human_todo"])
+    store.apply([{"op": "update_card", "id": problem, "body": "Звонят по 20 минут.\nВажность: высокая"}], HUMAN)
+    assert assess(store)["human_todo"] == []
+    add(store, RESULT, "Записаться без звонка", problem, author=AGENT)
     assert assess(store)["clean"] and assess(store)["gaps"] == []
 
 
@@ -83,12 +85,35 @@ def test_several_results_and_branches(store):
     assert "Сценарий 2" in " ".join(tree(store))
 
 
-def test_proposed_cards_are_pending_not_counted(store):
+def test_proposed_cards_wait_for_human_and_do_not_block_agent(store):
     domain = add(store, DOMAIN, "Пациенты", None)
     add(store, SCENARIO, "Черновик сценария", domain, author=AGENT)         # предложен агентом
     info = assess(store)
-    assert any("Черновик сценария" in p for p in info["pending"])
-    assert any("нет ни одного принятого «сценарий»" in g["text"] for g in info["gaps"])
+    assert any("Черновик сценария" in p for p in info["pending"])           # ждёт принятия человеком
+    assert not any("нет ни одного «сценарий»" in g["text"] for g in info["gaps"])
+    assert any("нет ни одного «проблема»" in g["text"] for g in info["gaps"])   # агент идёт глубже
+
+
+def test_prepare_tells_agent_not_to_ask_about_acceptance_and_importance(store):
+    domain = add(store, DOMAIN, "Пациенты", None)
+    s = add(store, SCENARIO, "С", domain, author=AGENT)
+    add(store, PROBLEM, "П", s, author=AGENT)
+    text = prepare(Ctx(store))
+    assert "не спрашивай подтверждения" in text.lower() and "НЕ спрашивай" in text
+
+
+def test_manifest_has_card_fields_and_auto_mode():
+    m = manifest()
+    assert m["card_fields"] == [{"kind": PROBLEM, "name": "Важность", "values": list(IMPORTANCE)}]
+    assert m["auto"]["targets"] == DOMAIN and [x["key"] for x in m["auto"]["limits"]] == ["scenarios", "problems", "results"]
+
+
+def test_auto_note_lists_domains_and_limits(store):
+    domain = add(store, DOMAIN, "Пациенты", None)
+    note = manifest()["auto"]["note"](Ctx(store), [store.cards[domain]], {"scenarios": 2, "problems": 4, "results": 1})
+    assert "АВТОМАТИЧЕСКИЙ РЕЖИМ" in note and "Пациенты" in note
+    assert "не больше 2 на домен" in note and "не больше 4 на сценарий" in note and "не больше 1 на проблему" in note
+    assert "proposed" in note and "Важность" in note
 
 
 def test_domain_must_be_written_by_human(store):

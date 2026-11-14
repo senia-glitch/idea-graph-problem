@@ -34,7 +34,7 @@ LAYERS: list[dict] = [
     {"kind": PROBLEM, "parent": SCENARIO,
      "question": "Что именно не так?",
      "sufficient": "описано конкретное событие или затруднение, а не готовое решение («нет X»)",
-     "field": {"name": "Важность", "values": IMPORTANCE,
+     "field": {"name": "Важность", "values": IMPORTANCE, "human": True,
                "question": "Насколько это важно?",
                "sufficient": "известны частота и цена проблемы (время, деньги, риск, усилия); "
                              "итог записан одним словом: " + ", ".join(IMPORTANCE)}},
@@ -79,6 +79,7 @@ def assess(store) -> dict:
     gaps: list[dict] = []
     pending: list[str] = []
     misplaced: list[str] = []
+    human_todo: list[str] = []
 
     for layer in LAYERS:
         for card in _cards(store, layer["kind"]):
@@ -93,8 +94,7 @@ def assess(store) -> dict:
             if layer.get("human_only") and not is_human(card.get("author", "")):
                 misplaced.append(f"{_name(card)}: карточку «{layer['kind']}» создал не человек — её пишет только пользователь")
 
-    domains = [c for c in _cards(store, DOMAIN) if c["status"] == ACCEPTED]
-    if not domains:
+    if not _cards(store, DOMAIN):
         gaps.append({"layer": DOMAIN, "card": None, "question": _BY_KIND[DOMAIN]["question"],
                      "text": "Нет ни одного домена. Его пишет пользователь вручную: кто испытывает проблему?"})
 
@@ -102,22 +102,21 @@ def assess(store) -> dict:
         if index == 0:
             continue
         child_kind = layer["kind"]
-        for parent in (c for c in _cards(store, layer["parent"]) if c["status"] == ACCEPTED):
-            owned = [c for c in _cards(store, child_kind) if c["status"] == ACCEPTED
-                     and (_parent(store, c) or {}).get("id") == parent["id"]]
+        for parent in _cards(store, layer["parent"]):
+            owned = [c for c in _cards(store, child_kind) if (_parent(store, c) or {}).get("id") == parent["id"]]
             if not owned:
                 gaps.append({"layer": child_kind, "card": parent["id"], "question": layer["question"],
-                             "text": f"У {layer['parent']} {_name(parent)} нет ни одного принятого "
-                                     f"«{child_kind}». {layer['question']}"})
+                             "text": f"У {layer['parent']} {_name(parent)} нет ни одного «{child_kind}». "
+                                     f"{layer['question']}"})
             field = layer.get("field")
             for child in owned if field else []:
                 if field_value(child, field) is None:
-                    gaps.append({"layer": child_kind, "card": child["id"], "question": field["question"],
-                                 "text": f"У {child_kind} {_name(child)} не указано поле «{field['name']}» "
-                                         f"(последняя строка описания: «{field['name']}: "
-                                         f"{' | '.join(field['values'])}»). {field['question']}"})
-    return {"gaps": gaps, "pending": pending, "misplaced": misplaced,
-            "clean": not (gaps or pending or misplaced)}
+                    human_todo.append(f"У {child_kind} {_name(child)} не выбрана «{field['name']}» "
+                                      f"({' / '.join(field['values'])})")
+    # Принятие черновиков и поле «Важность» — дело человека на графе, а не вопрос агента:
+    # они не считаются пробелами, которые агент должен закрыть.
+    return {"gaps": gaps, "pending": pending, "misplaced": misplaced, "human_todo": human_todo,
+            "clean": not (gaps or misplaced)}
 
 
 def tree(store) -> list[str]:
@@ -151,14 +150,18 @@ def prepare(ctx) -> str:
         lines.append("Не на своём месте (сначала скажи об этом человеку, не исправляй за него домены):")
         lines.extend("  - " + item for item in info["misplaced"])
     if info["pending"]:
-        lines.append("Ждут решения человека (черновики):")
+        lines.append("Черновики ждут, пока человек примет их на графе (кнопка на карточке). "
+                     "Не спрашивай подтверждения, иди дальше:")
         lines.extend("  - " + item for item in info["pending"])
+    if info["human_todo"]:
+        lines.append("Человек выбирает сам на карточке графа, об этом НЕ спрашивай:")
+        lines.extend("  - " + item for item in info["human_todo"])
     if info["gaps"]:
         lines.append("Незакрытые места (проверено кодом), по порядку:")
         lines.extend("  - " + gap["text"] for gap in info["gaps"][:12])
         lines.append("Начни с первого, если человек не указал другого. Расширять можно и вширь: "
                      "новый сценарий, новая проблема, новый результат.")
-    elif not info["pending"] and not info["misplaced"]:
+    elif not info["misplaced"]:
         lines.append("Незакрытых мест нет. Скажи об этом человеку и предложи, что можно расширить; "
                      "если он ничего не просит — вызови finish с итогом «пробелов_нет».")
     return "\n".join(lines)
@@ -168,6 +171,7 @@ def conclude(ctx, outcome: str) -> str:
     """Итог считает код: этап не закрывается, итог лишь говорит, есть ли незакрытые места."""
     info = assess(ctx.store)
     ctx.state["gaps"] = [gap["text"] for gap in info["gaps"]]
+    ctx.state["human_todo"] = info["human_todo"]
     ctx.state["last_revision"] = ctx.store.revision
     ctx.save_state()
     return "пробелов_нет" if info["clean"] else "есть_пробелы"
@@ -184,9 +188,32 @@ def layers_text() -> str:
         field = layer.get("field")
         if field:
             out.append(f"   - Поле «{field['name']}» (последняя строка описания: «{field['name']}: "
-                       f"{' | '.join(field['values'])}»)\n     - Вопрос: {field['question']}\n"
-                       f"     - Достаточно, если: {field['sufficient']}")
+                       f"{' | '.join(field['values'])}»). **Его выбирает человек на карточке графа — ты о нём не "
+                       f"спрашиваешь** (кроме автоматического режима). Для ориентира: {field['question']} "
+                       f"{field['sufficient']}")
     return "\n".join(out)
+
+
+AUTO_LIMITS = [
+    {"key": "scenarios", "name": "Сценариев на домен, не больше", "default": 3},
+    {"key": "problems", "name": "Проблем на сценарий, не больше", "default": 3},
+    {"key": "results", "name": "Результатов на проблему, не больше", "default": 2},
+]
+
+
+def auto_note(ctx, targets: list[dict], limits: dict) -> str:
+    """Вводные автоматического режима: агент решает сам и строит ветку доменов до результата."""
+    names = "; ".join(f"{c['id']} «{c['title']}»" for c in targets)
+    return (
+        "АВТОМАТИЧЕСКИЙ РЕЖИМ. Человека рядом нет, инструмента ask нет: решай сам, выбирая лучшие варианты по "
+        "критериям слоёв («Достаточно, если»). Работай только с этими доменами и не меняй их: " + names + ".\n"
+        f"Для каждого домена дострой ветку до результатов: сценарии (не больше {limits['scenarios']} на домен), "
+        f"проблемы (не больше {limits['problems']} на сценарий), результаты (не больше {limits['results']} "
+        "на проблему). Каждый вариант — отдельная карточка со статусом proposed (человек потом примет или поправит "
+        "их на графе). У каждой проблемы последней строкой описания поставь «Важность: <значение>» по частоте и цене. "
+        "Что уже есть в дереве — не дублируй, а достраивай недостающее. Карточки создавай крупными пакетами "
+        "graph_apply (ref и parent), не по одной. Когда ветки достроены — вызови finish с кратким итогом."
+    )
 
 
 def manifest() -> dict:
@@ -207,4 +234,9 @@ def manifest() -> dict:
         "skill": skill.replace("{{LAYERS}}", layers_text()).replace("{{MAX_FOLLOWUPS}}", str(MAX_FOLLOWUPS)),
         "prepare": prepare,
         "conclude": conclude,
+        # поля, которые человек выбирает на карточке графа (оболочка рисует выпадающий список)
+        "card_fields": [{"kind": layer["kind"], "name": layer["field"]["name"],
+                         "values": list(layer["field"]["values"])} for layer in LAYERS if layer.get("field")],
+        # автоматический режим: оболочка спрашивает домен(ы) и лимиты, агент решает сам
+        "auto": {"targets": DOMAIN, "limits": AUTO_LIMITS, "note": auto_note},
     }
