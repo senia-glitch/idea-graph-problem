@@ -201,9 +201,18 @@ AUTO_LIMITS = [
 ]
 
 
-def auto_note(ctx, targets: list[dict], limits: dict) -> str:
+def auto_note(ctx, targets: list[dict], limits: dict, only_research: bool = False) -> str:
     """Вводные автоматического режима: агент решает сам и строит ветку доменов до результата."""
     names = "; ".join(f"{c['id']} «{c['title']}»" for c in targets)
+    if only_research:
+        return (
+            "РЕЖИМ ИССЛЕДОВАНИЯ. Человека рядом нет, инструмента ask нет: решай сам. Работай только с этими доменами и "
+            "не меняй их: " + names + ".\n"
+            f"На основе результатов исследования создай только сценарии (не больше {limits['scenarios']} на домен) и "
+            f"проблемы (не больше {limits['problems']} на сценарий). Результаты и «Важность» НЕ создавай: человек "
+            "сделает это сам. Каждый вариант — отдельная карточка со статусом proposed. Карточки создавай крупными "
+            "пакетами graph_apply (ref и parent), не по одной. Когда закончишь — вызови finish с кратким итогом."
+        )
     return (
         "АВТОМАТИЧЕСКИЙ РЕЖИМ. Человека рядом нет, инструмента ask нет: решай сам, выбирая лучшие варианты по "
         "критериям слоёв («Достаточно, если»). Работай только с этими доменами и не меняй их: " + names + ".\n"
@@ -214,6 +223,53 @@ def auto_note(ctx, targets: list[dict], limits: dict) -> str:
         "Что уже есть в дереве — не дублируй, а достраивай недостающее. Карточки создавай крупными пакетами "
         "graph_apply (ref и parent), не по одной. Когда ветки достроены — вызови finish с кратким итогом."
     )
+
+
+def research_note(ctx, target: dict, materials: list[dict], index: int) -> str:
+    """Вводные исследователя: область и материалы пользователя (уже разобранные ссылки и файлы)."""
+    lines = [f"Область (домен) {target['id']}: «{target['title']}»"
+             + (f"\nПодробности от пользователя: {target['body']}" if (target.get("body") or "").strip() else ""),
+             "Найди реальные, уже существующие в этой области сценарии и реальные проблемы людей в рамках этих "
+             "сценариев. У каждой находки должен быть источник."]
+    if materials:
+        lines.append("Материалы пользователя (используй их и проверь по сети):")
+        for item in materials:
+            lines.append(f"--- {item['title']} ---\n{item['text']}")
+    else:
+        lines.append("Материалов пользователя нет: ищи в сети.")
+    return "\n\n".join(lines)
+
+
+def _clip(text: str, limit: int = 240) -> str:
+    text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def research_merge(ctx, found: list[tuple[dict, list[dict]]]) -> str:
+    """Вводные для основного агента: отчёты исследователей и правила, как ими пользоваться."""
+    lines = ["РЕЗУЛЬТАТЫ ИССЛЕДОВАНИЯ. Несколько исследователей на разных моделях независимо искали в сети и в материалах "
+             "пользователя реальные сценарии и проблемы. Как пользоваться:",
+             "- Включай сценарий или проблему, если её нашли минимум два исследователя ИЛИ у неё есть источник; "
+             "остальное отбрось как недоказанное.",
+             "- Одинаковые находки разных исследователей объединяй в одну карточку и приводи к формулировке слоя "
+             "(сценарий — ситуация, проблема — затруднение, не решение).",
+             "- Не дублируй то, что уже есть в дереве выше: достраивай недостающее, существующие карточки не трогай.",
+             "- Отдельной строкой в конце описания каждой созданной карточки пиши «Источники: ссылка1, ссылка2» "
+             "(только настоящие ссылки из отчётов). Если ссылок нет — «Источники: не подтверждено». "
+             "Не выдумывай находки, которых нет в отчётах."]
+    for target, reports in found:
+        lines.append(f"\nДомен {target['id']} «{target['title']}»:")
+        for report in reports:
+            lines.append(f"{report.get('who', 'исследователь')}"
+                         + (f" — {_clip(report['summary'], 200)}" if report.get("summary") else ""))
+            for item in report.get("scenarios", []):
+                lines.append(f"  сценарий: {item['title']}" + (f" — {_clip(item['description'])}" if item.get("description") else "")
+                             + (f" [источники: {', '.join(item['sources'])}]" if item.get("sources") else " [без источника]"))
+            for item in report.get("problems", []):
+                lines.append(f"  проблема (сценарий «{item['scenario']}»): {item['title']}"
+                             + (f" — {_clip(item['description'])}" if item.get("description") else "")
+                             + (f" [источники: {', '.join(item['sources'])}]" if item.get("sources") else " [без источника]"))
+    return "\n".join(lines)
 
 
 def manifest() -> dict:
@@ -239,4 +295,8 @@ def manifest() -> dict:
                          "values": list(layer["field"]["values"])} for layer in LAYERS if layer.get("field")],
         # автоматический режим: оболочка спрашивает домен(ы) и лимиты, агент решает сам
         "auto": {"targets": DOMAIN, "limits": AUTO_LIMITS, "note": auto_note},
+        # исследование области: оболочка запускает трёх исследователей на разных моделях (веб-поиск + материалы
+        # пользователя), основной агент в автоматическом режиме опирается на их отчёты и на уже созданные карточки
+        "research": {"skill": (Path(__file__).parent / "research_skill.md").read_text(encoding="utf-8"),
+                     "note": research_note, "merge": research_merge},
     }

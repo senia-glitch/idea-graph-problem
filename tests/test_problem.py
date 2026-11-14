@@ -150,3 +150,30 @@ def test_domain_is_top_level_without_parent(store):
     domain = add(store, DOMAIN, "Пациенты", None)
     add(store, DOMAIN, "Врачи", domain)                           # домен под доменом — не на своём месте
     assert any("верхнего уровня" in m for m in assess(store)["misplaced"])
+
+
+def test_research_note_and_merge(store):
+    domain = add(store, DOMAIN, "Пациенты частных клиник", None)
+    card = store.cards[domain]
+    m = manifest()["research"]
+    note = m["note"](Ctx(store), card, [{"title": "https://a.example", "text": "Текст статьи"}], 0)
+    assert "Пациенты частных клиник" in note and "Текст статьи" in note and "https://a.example" in note
+    assert "Материалов пользователя нет" in m["note"](Ctx(store), card, [], 1)
+    reports = [
+        {"who": "исследователь 1 (claude/opus)", "summary": "нашёл форумы",
+         "scenarios": [{"title": "Утром записаться", "description": "Звонок", "sources": ["https://f.example/1"]}],
+         "problems": [{"scenario": "Утром записаться", "title": "Не дозвониться", "description": "", "sources": []}]},
+        {"who": "исследователь 2 (claude/sonnet)", "scenarios": [], "problems": []},
+    ]
+    text = m["merge"](Ctx(store), [(card, reports)])
+    assert "минимум два исследователя" in text and "Источники: ссылка1" in text
+    assert "сценарий: Утром записаться — Звонок [источники: https://f.example/1]" in text
+    assert "проблема (сценарий «Утром записаться»): Не дозвониться [без источника]" in text
+    assert "исследователь 1 (claude/opus) — нашёл форумы" in text and "исследователь 2" in text
+
+
+def test_research_only_mode_skips_results_and_importance(store):
+    domain = add(store, DOMAIN, "Пациенты", None)
+    note = manifest()["auto"]["note"](Ctx(store), [store.cards[domain]], {"scenarios": 2, "problems": 3, "results": 1}, only_research=True)
+    assert "РЕЖИМ ИССЛЕДОВАНИЯ" in note and "НЕ создавай" in note and "не больше 2 на домен" in note
+    assert "не больше 1 на проблему" not in note
