@@ -177,3 +177,13 @@ def test_research_only_mode_skips_results_and_importance(store):
     note = manifest()["auto"]["note"](Ctx(store), [store.cards[domain]], {"scenarios": 2, "problems": 3, "results": 1}, only_research=True)
     assert "РЕЖИМ ИССЛЕДОВАНИЯ" in note and "НЕ создавай" in note and "не больше 2 на домен" in note
     assert "не больше 1 на проблему" not in note
+
+
+def test_auto_note_without_limits_forbids_busywork(store):
+    domain = add(store, DOMAIN, "Пациенты", None)
+    for only in (False, True):
+        note = manifest()["auto"]["note"](Ctx(store), [store.cards[domain]], None, only_research=only)
+        assert "не ограничено" in note and "не делай работу ради работы" in note
+        assert "подтверждено фактами" in note and "не больше" not in note
+    full = manifest()["auto"]["note"](Ctx(store), [store.cards[domain]], None)
+    assert "Важность" in full and "proposed" in full
