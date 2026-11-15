@@ -243,6 +243,62 @@ def _p_solution_clarify(ctx, step, target) -> str:
             "без роли. По каждой задай человеку вопрос через ask с вариантами (по одному за ход).")
 
 
+# ---------------------------------------------------------------------- проверки шагов (открытые вопросы)
+
+def _checks_roles(ctx, step) -> list[str]:
+    store = ctx.store
+    roles = _cards(store, ROLE)
+    if not roles:
+        return ["Ролей пока нет"]
+    if not _cards(store, SCENARIO):
+        return []
+    used = {e["to"] for e in store.edges.values() if e["kind"] == PARTICIPATES}
+    return [f"Роль «{r['title']}» не участвует ни в одном сценарии" for r in roles if r["id"] not in used]
+
+
+def _checks_scenarios(ctx, step) -> list[str]:
+    store = ctx.store
+    scenarios = _cards(store, SCENARIO)
+    if not scenarios:
+        return ["Сценариев пока нет"]
+    return [f"У сценария «{s['title']}» не указаны роли" for s in scenarios if not _roles_of(store, s["id"])]
+
+
+def _checks_select(ctx, step) -> list[str]:
+    return [] if selected_scenarios(ctx.store) else ["Ни один сценарий не отмечен «Автоматизировать: да»"]
+
+
+def _checks_asis(ctx, step) -> list[str]:
+    store = ctx.store
+    out = []
+    for scenario in selected_scenarios(store):
+        cards = _children(store, scenario["id"], ASIS)
+        if not cards:
+            out.append(f"У сценария «{scenario['title']}» нет диаграммы «как есть»")
+        allowed = {r["title"] for r in _roles_of(store, scenario["id"])}
+        for card in cards:
+            raw = (card.get("attrs") or {}).get("diagram")
+            for problem in diagrams.problems(raw):
+                out.append(f"«{card['title']}»: {problem}")
+            if allowed and isinstance(raw, dict):
+                for name in diagrams.normalize(raw)["participants"]:
+                    if name not in allowed:
+                        out.append(f"В «{card['title']}» участник «{name}» не входит в роли сценария")
+    return out
+
+
+def _checks_solution(ctx, step) -> list[str]:
+    store = ctx.store
+    out = []
+    for scenario in selected_scenarios(store):
+        for kind, label in ((SOLUTION, "решение"), (TOBE, "диаграмма «как будет»")):
+            if not _children(store, scenario["id"], kind):
+                out.append(f"У сценария «{scenario['title']}» нет: {label}")
+        for card in _children(store, scenario["id"], TOBE):
+            out.extend(f"«{card['title']}»: {p}" for p in diagrams.problems((card.get("attrs") or {}).get("diagram")))
+    return out
+
+
 # ---------------------------------------------------------------------- вводные, проверки, итог
 
 def assess(store) -> dict:
@@ -325,23 +381,33 @@ def manifest() -> dict:
             ],
             "steps": [
                 {"id": "roles", "title": "Роли", "question": "Выберите роли участников процессов этой сферы или напишите свои.",
-                 "produces": [ROLE], "needs": [], "target_kind": SPHERE,
+                 "help": "Кто участвует в процессах вашей сферы: клиент, сотрудник, система. Помощник предложит роли (опираясь на анализ "
+                         "конкурентов, если он есть), вы выберете нужные. Запускать можно повторно: он дополнит список, не дублируя.",
+                 "checks": _checks_roles, "produces": [ROLE], "needs": [], "target_kind": SPHERE,
                  "prompts": {"suggest": _p_roles_suggest, "review": _p_roles_review, "clarify": _p_roles_clarify}},
                 {"id": "scenarios", "title": "Сценарии",
                  "question": "Опишите бизнес-процессы для этих ролей или выберите из предложений.",
-                 "produces": [SCENARIO], "needs": ["roles"], "target_kind": SPHERE,
+                 "help": "Что эти роли делают: бизнес-процессы. Выберите из предложений или напишите свои; у каждого сценария должны быть указаны "
+                         "роли-участницы. Диаграмма вариантов использования строится сама.",
+                 "checks": _checks_scenarios, "produces": [SCENARIO], "needs": ["roles"], "target_kind": SPHERE,
                  "visual": {"module": "usecase.js", "name": "usecase", "title": "Диаграмма вариантов использования"},
                  "prompts": {"suggest": _p_scenarios_suggest, "review": _p_scenarios_review, "clarify": _p_scenarios_clarify}},
                 {"id": "select", "title": "Выбор сценариев", "question": "Выберите сценарии, подлежащие автоматизации разрабатываемым ПО.",
-                 "produces": [], "needs": ["scenarios"], "target_kind": SPHERE,
+                 "help": "Отметьте, какие сценарии автоматизируем: у карточки сценария поле «Автоматизировать» (да, нет, позже) в панели свойств "
+                         "графа. Помощник может предложить выбор по важности и по тому, что автоматизируют конкуренты.",
+                 "checks": _checks_select, "produces": [], "needs": ["scenarios"], "target_kind": SPHERE,
                  "requires": {"kind": SCENARIO, "field": AUTOMATE_FIELD, "value": "да", "min": 1},
                  "prompts": {"suggest": _p_select_suggest, "review": _p_select_review}},
                 {"id": "asis", "title": "Как есть", "question": "Опишите, как сейчас проходит сценарий от начала до конца, по шагам.",
-                 "produces": [ASIS], "needs": ["select"], "target_kind": SCENARIO,
+                 "help": "Как сценарий проходит сейчас, шаг за шагом: кто кому что делает. Отмечайте боли на шагах (что не так, как часто, чем стоит). "
+                         "Текст шагов можно вставить в редактор карточки и построить диаграмму.",
+                 "checks": _checks_asis, "produces": [ASIS], "needs": ["select"], "target_kind": SCENARIO,
                  "prompts": {"suggest": _p_asis_suggest, "generate": _p_asis_generate, "review": _p_asis_review,
                              "clarify": _p_asis_clarify}},
                 {"id": "solution", "title": "Решение", "question": "Выберите или опишите желаемый вид автоматизации.",
-                 "produces": [SOLUTION, TOBE], "needs": ["asis"], "target_kind": SCENARIO,
+                 "help": "Что и как автоматизируем (по шагам или роли целиком) и как будет выглядеть процесс после: с «Системой», «БД» и внешними "
+                         "ресурсами. Отличия от «как есть» отмечаются на диаграмме.",
+                 "checks": _checks_solution, "produces": [SOLUTION, TOBE], "needs": ["asis"], "target_kind": SCENARIO,
                  "prompts": {"suggest": _p_solution_suggest, "generate": _p_solution_generate, "review": _p_solution_review,
                              "clarify": _p_solution_clarify}},
             ],

@@ -288,5 +288,27 @@ def test_changing_a_role_after_approval_proposes_edits_for_scenarios(project):
     note = project.script.notes[-1][1]
     assert "Человек изменил утверждённые карточки" in note and "Сценарии" in note and "Врач" in note
     steps = {s["id"]: s for s in project.state()["stages"]["processes"]["steps"]}
-    assert steps["scenarios"]["stale"]["cards"] == [role] and steps["asis"]["stale"] is not None
+    assert steps["scenarios"]["stale"]["cards"] == [role] and steps["asis"]["stale"] is None
     assert scenario in project.store.cards
+
+
+def test_step_checks_report_open_issues(store):
+    ctx = Ctx(store)
+    steps = {s["id"]: s for s in manifest()["stage"]["steps"]}
+    assert all(s["help"] and callable(s["checks"]) for s in steps.values())
+    run = lambda sid: steps[sid]["checks"](ctx, steps[sid])                          # noqa: E731
+    assert run("roles") == ["Ролей пока нет"] and run("scenarios") == ["Сценариев пока нет"]
+    assert run("select") == ["Ни один сценарий не отмечен «Автоматизировать: да»"]
+    sphere = add(store, "сфера", "Клиники")
+    doctor = add(store, "роль", "Врач", sphere)
+    add(store, "роль", "Пациент", sphere)
+    scenario = add(store, "сценарий", "Приём", sphere, body="Автоматизировать: да", links=[{"to": doctor, "kind": "участвует"}])
+    add(store, "сценарий", "Оплата", sphere)
+    assert run("roles") == ["Роль «Пациент» не участвует ни в одном сценарии"]
+    assert run("scenarios") == ["У сценария «Оплата» не указаны роли"] and run("select") == []
+    assert run("asis") == ["У сценария «Приём» нет диаграммы «как есть»"]
+    add(store, "как есть", "Как есть: приём", scenario, attrs={"diagram": GOOD})
+    out = run("asis")
+    assert "В «Как есть: приём» участник «Пациент» не входит в роли сценария" in out
+    assert "В «Как есть: приём» участник «Регистратура» не входит в роли сценария" in out and len(out) == 2
+    assert run("solution") == ["У сценария «Приём» нет: решение", "У сценария «Приём» нет: диаграмма «как будет»"]
