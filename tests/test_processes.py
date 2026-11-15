@@ -53,7 +53,9 @@ def test_manifest_declares_steps_kinds_gates_and_static():
     stage = m["stage"]
     assert [s["id"] for s in stage["steps"]] == ["roles", "scenarios", "select", "asis", "solution"]
     assert [s["needs"] for s in stage["steps"]] == [[], ["roles"], ["scenarios"], ["select"], ["asis"]]
-    assert stage["steps"][2]["requires"] == {"kind": "сценарий", "field": "Автоматизировать", "value": "да", "min": 1}
+    assert [(s["phase"], s["label"]) for s in stage["steps"]] == [
+        ("Процессы", "Предложить роли"), ("Процессы", "Предложить сценарии"), ("Процессы", "Предложить, что автоматизировать"),
+        ("Процессы", "Описать «как есть»"), ("Решение", "Предложить решение")]
     assert stage["steps"][3]["target_kind"] == "сценарий" and stage["steps"][1]["visual"]["module"] == "usecase.js"
     kinds = {k["kind"]: k for k in stage["kinds"]}
     assert set(kinds) == {"сфера", "роль", "сценарий", "как есть", "решение", "как будет"}
@@ -225,7 +227,7 @@ def wait(project, statuses=("finished", "error", "asking"), timeout=15):
     raise AssertionError("не дождались")
 
 
-def test_roles_step_dialog_human_decision_and_gate(project):
+def test_roles_step_dialog_and_human_decision(project):
     project.start("processes", step="roles", action="suggest", target="c1")
     run = wait(project, ("asking",))
     note = project.script.notes[0][1]
@@ -234,15 +236,9 @@ def test_roles_step_dialog_human_decision_and_gate(project):
     wait(project, ("finished",))
     role = next(c for c in project.store.cards.values() if c["kind"] == "роль")
     assert role["decision"]["by"] == HUMAN and role["status"] == "proposed"
-    with pytest.raises(EngineError) as info:
-        project.approve_step("processes", "roles")
-    assert info.value.code == "pending"
-    project.approve_step("processes", "roles", accept_all=True)
     steps = {s["id"]: s for s in project.state()["stages"]["processes"]["steps"]}
-    assert steps["roles"]["status"] == "approved" and steps["select"]["required"] == {"ok": False, "count": 0, "min": 1}
-    with pytest.raises(EngineError) as info:
-        project.approve_step("processes", "select")
-    assert info.value.code == "empty_step"
+    assert [i["text"] for i in steps["roles"]["issues"]] == ["Не принято карточек: 1"]
+    assert "status" not in steps["roles"] and "required" not in steps["select"]
 
 
 def test_auto_mode_council_decides_with_rationale_on_the_card(project):
@@ -277,10 +273,9 @@ def test_asis_prompt_targets_one_scenario_or_all_selected(project):
     assert "убрать шаг" in project.script.notes[-1][1] and "Система" in project.script.notes[-1][1]
 
 
-def test_changing_a_role_after_approval_proposes_edits_for_scenarios(project):
+def test_changing_an_accepted_role_proposes_edits_for_scenarios(project):
     role = add(project.store, "роль", "Врач", "c1")
     scenario = add(project.store, "сценарий", "Врач принимает пациента", "c1")
-    project.approve_step("processes", "roles")
     project.human_ops([{"op": "update_card", "id": role, "title": "Терапевт"}])
     wait(project, ("finished",))
     run = project.runs["processes"]
@@ -312,3 +307,26 @@ def test_step_checks_report_open_issues(store):
     assert "В «Как есть: приём» участник «Пациент» не входит в роли сценария" in out
     assert "В «Как есть: приём» участник «Регистратура» не входит в роли сценария" in out and len(out) == 2
     assert run("solution") == ["У сценария «Приём» нет: решение", "У сценария «Приём» нет: диаграмма «как будет»"]
+
+
+def test_document_collects_everything_for_the_developer(store):
+    from idea_graph_processes import document
+    ctx = Ctx(store)
+    assert document(ctx) == ""
+    sphere = add(store, "сфера", "Клиники")
+    doctor = add(store, "роль", "Врач", sphere, body="Ведёт приём")
+    patient = add(store, "роль", "Пациент", sphere, status="proposed")
+    scenario = add(store, "сценарий", "Приём", sphere, body="Описание\nАвтоматизировать: да\nВажность: высокая",
+                   links=[{"to": doctor, "kind": "участвует"}, {"to": patient, "kind": "участвует"}])
+    add(store, "сценарий", "Оплата", sphere)
+    add(store, "как есть", "Как есть: приём", scenario, body="Долго дозвониться", attrs={"diagram": GOOD})
+    add(store, "решение", "Онлайн-запись", scenario, body="Запись без звонка",
+        attrs={"solution": {"items": [{"step": 1, "kind": "автоматизировать шаг", "note": "форма на сайте"}]}})
+    add(store, "как будет", "Как будет: приём", scenario, attrs={"diagram": GOOD})
+    text = document(ctx)
+    assert text.startswith("## Процессы\n")
+    assert "- **Врач**: Ведёт приём" in text and "- **Пациент** (предложено)" in text
+    assert "- **Приём** — **автоматизируем** (роли: Врач, Пациент; Важность: высокая)" in text and "- **Оплата** (роли: роли не указаны)" in text
+    assert "### Как есть сейчас" in text and "Проблема: Долго дозвониться" in text and "```mermaid\nsequenceDiagram" in text
+    assert "| 1. Звонит | Не дозвониться | часто | 20 минут | высокая |" in text
+    assert "## Решение" in text and "- автоматизировать шаг (шаг 1): форма на сайте" in text and "Как будет:" in text

@@ -299,6 +299,77 @@ def _checks_solution(ctx, step) -> list[str]:
     return out
 
 
+# ---------------------------------------------------------------------- документ
+
+def _md(text) -> str:
+    return " ".join(str(text or "").split())
+
+
+def _fence(diagram) -> str:
+    try:
+        return "```mermaid\n" + diagrams.to_mermaid(diagram) + "\n```"
+    except (ValueError, TypeError):
+        return "_диаграмма пока не заполнена_"
+
+
+def _pain_table(diagram) -> list[str]:
+    try:
+        steps = diagrams.normalize(diagram)["steps"]
+    except (ValueError, TypeError):
+        return []
+    rows = [(i, s) for i, s in enumerate(steps, 1) if s.get("pain")]
+    if not rows:
+        return []
+    out = ["", "| Шаг | Боль | Как часто | Цена | Важность |", "|---|---|---|---|---|"]
+    for i, step in rows:
+        p = step["pain"]
+        out.append(f"| {i}. {_md(step['text'])} | {_md(p.get('what')) or '—'} | {_md(p.get('often')) or '—'} | "
+                   f"{_md(p.get('cost')) or '—'} | {_md(p.get('importance')) or '—'} |")
+    return out
+
+
+def document(ctx) -> str:
+    """Разделы «Процессы» и «Решение» для документа: роли, сценарии, как есть с болями, решение и как будет."""
+    store = ctx.store
+    roles, scenarios = _cards(store, ROLE), _cards(store, SCENARIO)
+    if not (roles or scenarios):
+        return ""
+    mark = lambda card: "" if card["status"] == "accepted" else " (предложено)"       # noqa: E731
+    lines = ["## Процессы", ""]
+    if roles:
+        lines += ["### Роли", ""] + [f"- **{c['title']}**{mark(c)}" + (f": {_md(c['body'])}" if (c.get("body") or "").strip() else "") for c in roles] + [""]
+    if scenarios:
+        lines += ["### Сценарии", ""]
+        for c in scenarios:
+            chosen = " — **автоматизируем**" if _field(c, AUTOMATE_FIELD) == "да" else ""
+            who = ", ".join(r["title"] for r in _roles_of(store, c["id"])) or "роли не указаны"
+            extra = ", ".join(f"{n}: {_field(c, n)}" for n in ("Важность", "Частота") if _field(c, n))
+            lines.append(f"- **{c['title']}**{mark(c)}{chosen} (роли: {who}{'; ' + extra if extra else ''})")
+        lines.append("")
+    chosen_cards = selected_scenarios(store)
+    if chosen_cards:
+        lines += ["### Как есть сейчас", ""]
+        for s in chosen_cards:
+            for card in _children(store, s["id"], ASIS):
+                lines += [f"#### {s['title']}", ""]
+                if (card.get("body") or "").strip():
+                    lines += [f"Проблема: {_md(card['body'])}", ""]
+                diagram = (card.get("attrs") or {}).get("diagram")
+                lines += [_fence(diagram)] + _pain_table(diagram) + [""]
+        out = []
+        for s in chosen_cards:
+            for card in _children(store, s["id"], SOLUTION):
+                items = ((card.get("attrs") or {}).get("solution") or {}).get("items") or []
+                out += [f"#### {s['title']}", "", f"{_md(card.get('body'))}" if (card.get("body") or "").strip() else ""]
+                out += [f"- {_md(i.get('kind'))}" + (f" (шаг {i['step']})" if i.get("step") else "") + (f": {_md(i.get('note'))}" if i.get("note") else "")
+                        for i in items if isinstance(i, dict)] + [""]
+            for card in _children(store, s["id"], TOBE):
+                out += ["Как будет:", "", _fence((card.get("attrs") or {}).get("diagram")), ""]
+        if out:
+            lines += ["## Решение", ""] + out
+    return "\n".join(lines).rstrip()
+
+
 # ---------------------------------------------------------------------- вводные, проверки, итог
 
 def assess(store) -> dict:
@@ -363,6 +434,7 @@ def manifest() -> dict:
         "banks": {"reads": ["competitors", "analysis"], "writes": []},
         "prepare": prepare,
         "conclude": conclude,
+        "document": document,
         "stage": {
             "roots": SPHERE,
             "hidden_edges": [PARTICIPATES],
@@ -380,31 +452,30 @@ def manifest() -> dict:
                  "renderer": {"module": "sequence.js", "name": "sequence", "tobe": True}},
             ],
             "steps": [
-                {"id": "roles", "title": "Роли", "question": "Выберите роли участников процессов этой сферы или напишите свои.",
+                {"id": "roles", "phase": "Процессы", "label": "Предложить роли", "title": "Роли", "question": "Выберите роли участников процессов этой сферы или напишите свои.",
                  "help": "Кто участвует в процессах вашей сферы: клиент, сотрудник, система. Помощник предложит роли (опираясь на анализ "
                          "конкурентов, если он есть), вы выберете нужные. Запускать можно повторно: он дополнит список, не дублируя.",
                  "checks": _checks_roles, "produces": [ROLE], "needs": [], "target_kind": SPHERE,
                  "prompts": {"suggest": _p_roles_suggest, "review": _p_roles_review, "clarify": _p_roles_clarify}},
-                {"id": "scenarios", "title": "Сценарии",
+                {"id": "scenarios", "phase": "Процессы", "label": "Предложить сценарии", "title": "Сценарии",
                  "question": "Опишите бизнес-процессы для этих ролей или выберите из предложений.",
                  "help": "Что эти роли делают: бизнес-процессы. Выберите из предложений или напишите свои; у каждого сценария должны быть указаны "
                          "роли-участницы. Диаграмма вариантов использования строится сама.",
                  "checks": _checks_scenarios, "produces": [SCENARIO], "needs": ["roles"], "target_kind": SPHERE,
                  "visual": {"module": "usecase.js", "name": "usecase", "title": "Диаграмма вариантов использования"},
                  "prompts": {"suggest": _p_scenarios_suggest, "review": _p_scenarios_review, "clarify": _p_scenarios_clarify}},
-                {"id": "select", "title": "Выбор сценариев", "question": "Выберите сценарии, подлежащие автоматизации разрабатываемым ПО.",
+                {"id": "select", "phase": "Процессы", "label": "Предложить, что автоматизировать", "title": "Выбор сценариев", "question": "Выберите сценарии, подлежащие автоматизации разрабатываемым ПО.",
                  "help": "Отметьте, какие сценарии автоматизируем: у карточки сценария поле «Автоматизировать» (да, нет, позже) в панели свойств "
                          "графа. Помощник может предложить выбор по важности и по тому, что автоматизируют конкуренты.",
                  "checks": _checks_select, "produces": [], "needs": ["scenarios"], "target_kind": SPHERE,
-                 "requires": {"kind": SCENARIO, "field": AUTOMATE_FIELD, "value": "да", "min": 1},
                  "prompts": {"suggest": _p_select_suggest, "review": _p_select_review}},
-                {"id": "asis", "title": "Как есть", "question": "Опишите, как сейчас проходит сценарий от начала до конца, по шагам.",
+                {"id": "asis", "phase": "Процессы", "label": "Описать «как есть»", "title": "Как есть", "question": "Опишите, как сейчас проходит сценарий от начала до конца, по шагам.",
                  "help": "Как сценарий проходит сейчас, шаг за шагом: кто кому что делает. Отмечайте боли на шагах (что не так, как часто, чем стоит). "
                          "Текст шагов можно вставить в редактор карточки и построить диаграмму.",
                  "checks": _checks_asis, "produces": [ASIS], "needs": ["select"], "target_kind": SCENARIO,
                  "prompts": {"suggest": _p_asis_suggest, "generate": _p_asis_generate, "review": _p_asis_review,
                              "clarify": _p_asis_clarify}},
-                {"id": "solution", "title": "Решение", "question": "Выберите или опишите желаемый вид автоматизации.",
+                {"id": "solution", "phase": "Решение", "label": "Предложить решение", "title": "Решение", "question": "Выберите или опишите желаемый вид автоматизации.",
                  "help": "Что и как автоматизируем (по шагам или роли целиком) и как будет выглядеть процесс после: с «Системой», «БД» и внешними "
                          "ресурсами. Отличия от «как есть» отмечаются на диаграмме.",
                  "checks": _checks_solution, "produces": [SOLUTION, TOBE], "needs": ["asis"], "target_kind": SCENARIO,
